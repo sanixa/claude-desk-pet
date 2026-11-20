@@ -1,0 +1,9 @@
+# 遠端跑的東西一定要 LF：帶 CRLF 的 shebang 在 Linux 上會直接失敗。
+*.sh   text eol=lf
+*.js   text eol=lf
+*.py   text eol=lf
+*.pyw  text eol=lf
+# Windows 跑的東西維持 CRLF（.vbs 尤其挑）。
+*.cmd  text eol=crlf
+*.vbs  text eol=crlf
+*.ps1  text eol=crlf

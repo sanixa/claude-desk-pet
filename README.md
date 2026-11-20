@@ -4,6 +4,10 @@
 
 ![六种状态预览](docs/preview.png)
 
+> **這個 fork 多了一隻「多來源桌寵」**：同一隻桌寵同時接 Claude Code、Cursor（本機和
+> Remote-SSH）和遠端 opencode 的狀態，跟原本的 plugin 並存、互不影響。
+> 做法和踩過的坑看 [MULTI-SOURCE.md](MULTI-SOURCE.md)，要打什麼指令看 [RUNBOOK.md](RUNBOOK.md)。
+
 ## 功能
 
 **🧡 桌宠悬浮窗**：透明背景、永远置顶，可以拖到屏幕任何位置
