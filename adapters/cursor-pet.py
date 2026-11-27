@@ -6,9 +6,9 @@
 # 只用标准库，不管发生什么都印 {} 并以 0 退出 —— 绝不能挡住 Cursor 干活。
 #
 # 同一支脚本在远端 Linux 也能用（Cursor Remote-SSH 的 hooks 是在远端跑的）：
-# 设了 DESK_PET_URL 就同时 POST 给 Windows 那边的收集器（经 ssh RemoteForward 的 127.0.0.1:47322）。
+# 设了 DESK_PET_URL 就同时 POST 给 Windows 那边的收集器（经 ssh RemoteForward 的 127.0.0.1:47355）。
 # 本地状态文件照写不误 —— 连续出错次数要靠它记。
-#   DESK_PET_URL      收集器地址，例如 http://127.0.0.1:47322/status
+#   DESK_PET_URL      收集器地址，例如 http://127.0.0.1:47355/status
 #   DESK_PET_PROJECT  气泡上的名字，不设就按 workspace 路径取
 #
 # 装法见 ~/.cursor/hooks.json；远端装法见 ../remote/install.sh
@@ -18,6 +18,10 @@ import re
 import sys
 import time
 import urllib.request
+
+# 回报的对象是隧道这端的 127.0.0.1，代理永远不可能是对的；
+# 但 urllib 默认会读 http_proxy，远端 shell 常把它设在 rc 里。明确关掉。
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 RUN_DIR = os.environ.get('DESK_PET_DIR') or os.path.join(os.path.expanduser('~'), '.claude', 'desk-pet')
 SESSIONS = os.path.join(RUN_DIR, 'sessions')
@@ -117,7 +121,7 @@ def post(payload):
     req = urllib.request.Request(POST_URL, data=body, method='POST',
                                  headers={'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(req, timeout=POST_TIMEOUT) as resp:
+        with NO_PROXY.open(req, timeout=POST_TIMEOUT) as resp:
             log('    → 已回报（HTTP %s）' % resp.status)
     except Exception as err:
         log('    → 回报失败（%s）：%s —— 先歇 %d 秒，要修跑 fix-tunnel.sh' % (POST_URL, err, DOWN_FOR))

@@ -50,6 +50,12 @@ if ($ssh) {
 $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Desk Pet.lnk'
 Line '开机自动启动' (Test-Path $lnk) $(if (Test-Path $lnk) { "已设定  $lnk" } else { '没设定（手动跑 start-pet.cmd）' })
 
+# 2.6 是不是被人自己关掉的（排程工作会尊重这个记号）
+$off = Join-Path $RUN 'off'
+if (Test-Path $off) {
+    Line '手动关掉了' $false "$(Get-Content $off -Raw -ErrorAction SilentlyContinue) 关的；排程不会叫它，跑 start-pet.cmd 就会回来"
+}
+
 # 3. 埠号两边要一致（换埠只改一边是最容易犯的错）
 $fwd = (& ssh -G desk-pet-remote 2>$null | Select-String '^remoteforward') -replace '.*?:(\d+)\s.*', '$1'
 if ($fwd) {
@@ -86,7 +92,7 @@ if (-not $found) { '  （没有任何来源在发状态）' }
 
 ''
 '--- 远端那头要自己看（在远端的终端跑）---'
-"  curl -fsS http://127.0.0.1:$port/            # 通的话回 {`"ok`": true, `"pet`": `"alive`"}"
+"  curl --noproxy '*' -fsS http://127.0.0.1:$port/            # 通的话回 {`"ok`": true, `"pet`": `"alive`"}"
 '  ~/.cursor/desk-pet/fix-tunnel.sh             # 隧道不通时，它会判断是哪一种断法'
 '  tail -5 ~/.cursor/desk-pet/state/cursor-hook.log   # 远端 Cursor 的 hook 有没有进来'
 '  tail -5 ~/.config/opencode/desk-pet.log            # 远端 opencode 的 plugin 有没有挂上'

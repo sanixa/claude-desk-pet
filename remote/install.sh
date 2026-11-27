@@ -1,7 +1,7 @@
 #!/bin/sh
 # 把远端 Cursor 接上 Windows 的桌宠。在「远端机器」上跑一行就好：
 #
-#   curl -fsS http://127.0.0.1:47355/install | sh
+#   curl --noproxy '*' -fsS http://127.0.0.1:47355/install | sh
 #
 # 前提是 Windows 那边桌宠在跑，而且 ssh 带了 RemoteForward（端口两边要一致）。
 # Cursor Remote-SSH 吃 ~/.ssh/config，加完要重连一次远端窗口，隧道才会建起来。
@@ -15,7 +15,7 @@ HOOKS="$HOME/.cursor/hooks.json"
 
 command -v curl >/dev/null 2>&1 || { echo "远端没有 curl，装不了。"; exit 1; }
 
-OUT=$(curl -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 5 "$URL/" 2>&1) || true
+OUT=$(curl --noproxy '*' -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 5 "$URL/" 2>&1) || true
 if [ "$OUT" != "HTTP 200" ]; then
     echo "连不到 $URL（$OUT）——隧道不通，先修隧道再装。"
     echo
@@ -46,8 +46,8 @@ done
 [ -n "$PY" ] || { echo "远端找不到 python3，先装一个再来。"; exit 1; }
 
 mkdir -p "$DIR/state"
-curl -fsS --max-time 10 "$URL/cursor-pet.py" -o "$DIR/cursor-pet.py"
-curl -fsS --max-time 10 "$URL/fix" -o "$DIR/fix-tunnel.sh"
+curl --noproxy '*' -fsS --max-time 10 "$URL/cursor-pet.py" -o "$DIR/cursor-pet.py"
+curl --noproxy '*' -fsS --max-time 10 "$URL/fix" -o "$DIR/fix-tunnel.sh"
 chmod +x "$DIR/fix-tunnel.sh"
 rm -f "$DIR/state/tunnel-down"
 LABEL="${DESK_PET_PROJECT:-$(hostname -s 2>/dev/null || hostname)}"

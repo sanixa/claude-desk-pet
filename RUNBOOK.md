@@ -46,6 +46,7 @@ powershell -ExecutionPolicy Bypass -File <安裝目錄>\check.ps1
 | Windows | 本機 Cursor 的 hook | `~\.cursor\hooks.json` → `adapters\cursor-pet.py` |
 | 遠端 | Cursor 的 hook | `~/.cursor/hooks.json` → `~/.cursor/desk-pet/report.sh` |
 | 遠端 | opencode 的 plugin | `~/.config/opencode/plugins/desk-pet.js` |
+| 遠端 | Claude SSH 工作階段的監看 | `~/.claude/desk-pet/bin/claude-watch.py`（由看守養著） |
 | Windows | 開機自動啟動 | `Startup\Desk Pet.lnk` → `autostart.vbs` |
 
 佔用的埠：**47355** 收集器（兩頭同號）、47321 桌寵單例鎖、47320 看守單例鎖。
@@ -90,6 +91,45 @@ Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.C
 
 要停掉自動啟動：刪掉那個捷徑就好（`explorer shell:startup` 可以打開那個資料夾）。
 
+> **別從 Claude／Cursor 的工作階段裡啟動它。** 那樣起來的行程是那個 app 的子孫，
+> app 一重啟（自動更新最常見）整棵樹跟著走，桌寵、看守、隧道一起消失，而且日誌上看不出來——
+> 因為沒有人出錯，只是被收掉了。2026-11-25 就這樣：app 凌晨 04:37 更新重啟，三個行程一起沒了。
+>
+> 手動起而且要脫離目前這個工作階段，讓 explorer 去開那個捷徑：
+>
+> ```powershell
+> explorer.exe "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Desk Pet.lnk"
+> ```
+>
+> 這樣行程的父親是 explorer（或直接變孤兒），誰重啟都不會波及。
+> 可以用 `check.ps1` 確認：行程還在就對了。
+
+> **捷徑只在「登入」時觸發。** 中途被收掉（app 重啟、被 EDR 收走、當掉）不會自己回來，
+> 而且你如果好幾天沒登出，它就一直沒有補位的機會。要它自己長回來就加一個排程工作：
+>
+> ```powershell
+> schtasks /create /tn DeskPet /tr "wscript.exe <安裝目錄>\autostart.vbs" /sc minute /mo 10 /f
+> ```
+>
+> 每 10 分鐘叫一次 `start-pet.cmd`，已經在跑就什麼都不會發生（單例鎖）。
+> 要拆掉：`schtasks /delete /tn DeskPet /f`。
+
+### 「退出桌寵」和排程怎麼共存
+
+排程會補位，但**不該跟你的決定作對**。所以右鍵選單的「退出桌宠」會留一個記號
+`~/.claude/desk-pet/off`，三邊約定如下：
+
+| 誰 | 怎麼跑 | 看到 `off` 記號時 |
+|---|---|---|
+| 排程／登入捷徑 | `start-pet.cmd auto` | 什麼都不做 |
+| 你自己 | `start-pet.cmd`（不帶參數） | 刪掉記號，照常啟動 |
+| 退出選單 | — | 寫下記號，並把看守和它的 ssh 一起收掉 |
+
+所以「退出」是退到你自己再開為止；而意外掛掉（沒有記號）十分鐘內會自己長回來。
+`check.ps1` 看得出差別：被人關掉時會多一行「手动关掉了」。
+
+退出時連看守一起收，是因為「說要退出卻留著一條連到公司機器的 ssh」更奇怪。
+
 > **登入後桌寵會先不見，這是正常的。** Claude 和 Cursor 都沒在跑時，桌寵兩分鐘後會**退場**
 > ——收起視窗，但行程留著。你一開 agent 它就回來（有人發狀態立刻回來，只是開了 app 沒下指令
 > 最多等 30 秒）。想確認它還活著就跑 `check.ps1`，或看 127.0.0.1:47355 有沒有回應。
@@ -106,7 +146,7 @@ Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.C
 在**遠端終端**：
 
 ```sh
-curl -fsS http://127.0.0.1:47355/install-opencode | sh
+curl --noproxy '*' -fsS http://127.0.0.1:47355/install-opencode | sh
 ```
 
 裝到 `~/.config/opencode/plugins/desk-pet.js`，然後**重開 opencode**——plugin 只在啟動時載入。
@@ -123,7 +163,7 @@ curl -fsS http://127.0.0.1:47355/install-opencode | sh
 在**遠端終端**：
 
 ```sh
-curl -fsS http://127.0.0.1:47355/install | sh
+curl --noproxy '*' -fsS http://127.0.0.1:47355/install | sh
 ```
 
 裝 `~/.cursor/desk-pet/{cursor-pet.py, report.sh, fix-tunnel.sh}` 並寫 `~/.cursor/hooks.json`
@@ -167,6 +207,33 @@ sed -i 's|^restrict,port-forwarding |restrict,port-forwarding,command="/home/<US
 開不了 shell、沒有 pty、跑不了別的指令，所以沒有 passphrase 也還算安全。
 `-N` 的隧道不開 session channel，完全不受 `command=` 影響，兩件事互不干擾。
 
+### 3.5 Claude 的 SSH 工作階段
+
+Claude Code 連 SSH 的時候，官方 plugin 把狀態寫到**遠端**的家目錄（`$.env`／`$.fs` 都是工作階段範圍的：
+`USERPROFILE` 在 Linux 上不存在，落到 `HOME` 就變成遠端的路徑）。本機桌寵看不到，所以要有人在遠端盯著。
+
+在**遠端終端**：
+
+```sh
+curl --noproxy '*' -fsS http://127.0.0.1:47355/install-claude-ssh | sh
+```
+
+它會先**驗一件事**：`~/.claude/desk-pet/sessions/` 裡到底有沒有 Claude 的狀態檔。
+沒有的話就不是「寫到遠端」而是「plugin 在 SSH 工作階段根本沒載入」，腳本會直接說並退出——別白裝。
+
+裝好之後：
+
+- `~/.claude/desk-pet/bin/claude-watch.py`：每 0.5 秒看一次那個目錄，有變動就 POST 回收集器。
+  啟動時只認五分鐘內動過的（不把上禮拜的狀態叫醒），檔案消失就送 `gone`。
+  **stdin 一斷（ssh 死了）就自己退出**，不會在遠端留下孤兒。
+- `~/.claude/desk-pet/bin/dispatch.sh`：那把金鑰的強制指令改指到這裡，**一把金鑰兩個動詞**——
+  `fix` 跑 `fix-tunnel.sh`、`watch` 跑 watcher，其他一律當 `fix`。還是開不了 shell、跑不了別的指令。
+- Windows 這邊：重跑 `start-pet.cmd`，看守會多拉一條 `desk-pet-remote-watch` 的連線把 watcher 養著，
+  斷了自動重連。`tunnel.log` 裡開頭是「遠端 watcher」的行就是它說的話。
+
+沒裝的時候看守會講：連三次收到的都不是 watcher 的開場白，就印出該跑的那行裝機指令然後停手
+（因為那把金鑰的強制指令還指著 `fix-tunnel.sh`，`watch` 會被當成 `fix`）。
+
 ---
 
 ## 4. 檢查（由近到遠，一層一層）
@@ -190,7 +257,7 @@ Get-Content $env:USERPROFILE\.claude\desk-pet\tunnel.log -Tail 5 -Encoding UTF8
 **第三層，遠端看得到 Windows 嗎**（在**遠端終端**）：
 
 ```sh
-curl -fsS http://127.0.0.1:47355/ && echo
+curl --noproxy '*' -fsS http://127.0.0.1:47355/ && echo
 ```
 
 通了回 `{"ok": true, "pet": "alive"}`。這一行是整套最有價值的檢查：它同時驗了隧道和收集器。
@@ -214,10 +281,13 @@ Get-Content $env:USERPROFILE\.claude\desk-pet\collector.log -Tail 10 -Encoding U
 | 症狀 | 多半是 | 怎麼辦 |
 |---|---|---|
 | 桌寵整隻沒出現 | 沒啟動，或用到 Store 的 python | `start-pet.cmd`；看 `pet-error.log` |
+| 本來好好的，突然整組不見 | 從 agent 的工作階段裡起的，app 重啟時被一起收掉 | 用 explorer 開捷徑重起（見第 2 節） |
 | 本機 Cursor 沒反應 | hook 沒載入 | 看 `cursor-hook.log` 有沒有新行；Reload Window |
 | 遠端完全沒反應 | 隧道斷了 | 看 `tunnel.log`；一分鐘後看守會自己請遠端清 |
 | 遠端 curl 逾時 | 殘留的 sshd 占著埠 | 等看守自己清，或遠端跑 `fix-tunnel.sh` |
 | 遠端 curl 被拒 | 隧道通、桌寵沒開 | Windows 跑 `start-pet.cmd` |
+| 遠端 curl 說連不上／連不到代理 | 那個 shell 的 rc 設了 `http_proxy`，curl 把 127.0.0.1 也丟給代理 | 指令加 `--noproxy '*'`（第 3 節的指令都帶了） |
+| Claude 的 SSH 工作階段沒上鏡 | 狀態寫在遠端，沒人送回來 | 遠端裝 3.5 的 watcher |
 | 狀態停在舊的不動 | 那端掛了沒送 `gone` | 30 分鐘後自動退場，或直接砍 `sessions\*.json` |
 | 改了設定卻沒效果 | **ssh 只在啟動時讀設定** | 砍掉 `ssh -N` 行程，看守會用新設定重拉 |
 | 開機後隧道一直搶不到 | 上次關機時留下的殘骸還占著埠 | 遠端跑 `fix-tunnel.sh`；看守會在 8 秒內接手 |

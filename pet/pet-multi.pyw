@@ -27,6 +27,7 @@ SOUNDS = os.path.join(os.path.dirname(HERE), 'sounds')
 RUN_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.expanduser('~'), '.claude', 'desk-pet')
 SESSIONS = os.path.join(RUN_DIR, 'sessions')
 SETTINGS = os.path.join(RUN_DIR, 'settings.json')
+OFF_FLAG = os.path.join(RUN_DIR, 'off')   # 手动退出的记号：排程工作看到它就不叫了
 
 # 只允许开一个桌宠：占住 47321。这是官方桌宠用的同一个端口，占住它，插件自己那只就起不来。
 LOCK_PORT = 47321
@@ -329,6 +330,8 @@ SERVE_FILES = {
     '/fix': (os.path.join(STANDALONE, 'remote', 'fix-tunnel.sh'), 'text/x-shellscript'),
     '/opencode-pet.js': (os.path.join(STANDALONE, 'remote', 'opencode-pet.js'), 'text/javascript'),
     '/install-opencode': (os.path.join(STANDALONE, 'remote', 'install-opencode.sh'), 'text/x-shellscript'),
+    '/claude-watch.py': (os.path.join(STANDALONE, 'remote', 'claude-watch.py'), 'text/x-python'),
+    '/install-claude-ssh': (os.path.join(STANDALONE, 'remote', 'install-claude-ssh.sh'), 'text/x-shellscript'),
     '/cursor-pet.py': (os.path.join(STANDALONE, 'adapters', 'cursor-pet.py'), 'text/x-python'),
 }
 
@@ -410,6 +413,10 @@ class Collector(http.server.BaseHTTPRequestHandler):
                 clog('给不出 %s：%s' % (self.path, err))
                 self.reply(404, {'ok': False})
                 return
+        if self.path.split('?')[0] not in ('/', ''):
+            # 不认识的路径一定要 404：回 200 的话，远端 `curl … | sh` 会把这段 JSON 当指令跑
+            self.reply(404, {'ok': False, 'error': 'no such file'})
+            return
         self.reply(200, {'ok': True, 'pet': 'alive'})   # 远端拿这个确认隧道通了
 
     def do_POST(self):
@@ -642,6 +649,29 @@ class Pet:
         y = min(max(top, y), bottom - self.H)
         self.root.geometry(f'{self.W}x{self.H}+{x}+{y}')
 
+    def quit_pet(self):
+        """手动退出：留个记号再关。
+
+        排程工作每 10 分钟会叫一次 start-pet.cmd，没有这个记号的话「退出」只是隐藏十分钟。
+        自己再跑一次 start-pet.cmd（不带 auto）就会清掉记号。
+        看守和它的 ssh 一起收 —— 说要退出却留着一条连到公司机器的 ssh，那才奇怪。
+        """
+        try:
+            with open(OFF_FLAG, 'w', encoding='utf-8') as f:
+                f.write(time.strftime('%Y-%m-%d %H:%M:%S'))
+        except OSError:
+            pass
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe' or Name='python.exe' "
+              "or Name='ssh.exe'\" | Where-Object { $_.CommandLine -like '*tunnel.pyw*' -or "
+              "($_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*desk-pet-*') } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+        try:
+            subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True,
+                           timeout=20, creationflags=0x08000000)
+        except Exception:
+            pass
+        self.root.destroy()
+
     def make_menu(self):
         self.menu = tk.Menu(self.root, tearoff=0, font=self.font)
         size_menu = tk.Menu(self.menu, tearoff=0, font=self.font)
@@ -667,7 +697,7 @@ class Pet:
             lang_menu.add_radiobutton(label=label, variable=self.lang_var, value=value, command=self.set_lang)
         self.menu.add_cascade(label='状态栏语言 / Language', menu=lang_menu)
         self.menu.add_separator()
-        self.menu.add_command(label='退出桌宠', command=self.root.destroy)
+        self.menu.add_command(label='退出桌宠', command=self.quit_pet)
 
     def resize(self):
         self.settings['size'] = self.size_var.get()

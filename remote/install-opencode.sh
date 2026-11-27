@@ -1,7 +1,7 @@
 #!/bin/sh
 # 把远端 opencode 接上 Windows 的桌宠。在「远端机器」上跑一行：
 #
-#   curl -fsS http://127.0.0.1:47355/install-opencode | sh
+#   curl --noproxy '*' -fsS http://127.0.0.1:47355/install-opencode | sh
 #
 # 前提跟 Cursor 那边一样：桌宠在跑、专属隧道通着（Host desk-pet-remote）。
 set -eu
@@ -15,7 +15,7 @@ LABEL="${DESK_PET_PROJECT:-}"
 
 command -v curl >/dev/null 2>&1 || { echo "远端没有 curl，装不了。"; exit 1; }
 
-OUT=$(curl -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 5 "$URL/" 2>&1) || true
+OUT=$(curl --noproxy '*' -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 5 "$URL/" 2>&1) || true
 if [ "$OUT" != "HTTP 200" ]; then
     echo "连不到 $URL（$OUT）——隧道不通，先修隧道再装。"
     if [ -x "$HOME/.cursor/desk-pet/fix-tunnel.sh" ]; then
@@ -32,10 +32,10 @@ if ! command -v opencode >/dev/null 2>&1; then
 fi
 
 mkdir -p "$DIR"
-curl -fsS --max-time 10 "$URL/opencode-pet.js" -o "$DIR/desk-pet.js"
+curl --noproxy '*' -fsS --max-time 10 "$URL/opencode-pet.js" -o "$DIR/desk-pet.js"
 
 # 试一发，确认「远端 → 隧道 → 收集器」这条路是通的（不靠 opencode，先把管路验掉）
-post() { curl -sS --max-time 5 -X POST "$URL/status" -H 'Content-Type: application/json' --data-raw "$1" >/dev/null 2>&1 || true; }
+post() { curl --noproxy '*' -sS --max-time 5 -X POST "$URL/status" -H 'Content-Type: application/json' --data-raw "$1" >/dev/null 2>&1 || true; }
 HOST_LABEL="${LABEL:-$(hostname -s 2>/dev/null || hostname)}"
 post "{\"source\":\"opencode\",\"id\":\"install-check\",\"state\":\"waiting\",\"text\":\"我来啦～\",\"project\":\"$HOST_LABEL\"}"
 sleep 1

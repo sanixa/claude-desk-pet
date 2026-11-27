@@ -29,7 +29,7 @@ holder()  { ss -ltnp 2>/dev/null | grep ":$PORT " | sed -n 's/.*pid=\([0-9]*\).*
 sock_uid() { sockline | sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1; }
 sock_session() { sockline | sed -n 's#.*session-\([0-9]*\)\.scope.*#\1#p' | head -1; }
 
-OUT=$(curl -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 3 "$URL/" 2>&1)
+OUT=$(curl --noproxy '*' -sS -o /dev/null -w 'HTTP %{http_code}' --max-time 3 "$URL/" 2>&1)
 case "$OUT" in
     'HTTP 200') echo "隧道是通的（$OUT），不用修。"; exit 0 ;;
     *refused*|*reset*|*Empty*|*'closed connection'*)
@@ -56,7 +56,7 @@ if [ -n "$U" ] && [ "$U" != "$ME" ]; then
     echo "杀不了也不该杀，换一个端口："
     echo "  1. Windows: ~/.ssh/config 这台 host 的 RemoteForward 两个数字都改成新端口"
     echo "  2. Windows: start-pet.cmd 里的 DESK_PET_PORT 改成同一个，重启桌宠"
-    echo "  3. 重连这个远端窗口，再跑 curl -fsS http://127.0.0.1:<新端口>/install | sh"
+    echo "  3. 重连这个远端窗口，再跑 curl --noproxy '*' -fsS http://127.0.0.1:<新端口>/install | sh"
     echo "挑端口前先看一下这台有没有人用：ss -ltn | grep ':4735'"
     exit 1
 fi

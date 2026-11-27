@@ -16,6 +16,8 @@ remote/install.sh           遠端 Cursor 的裝機腳本（由收集器自己�
 remote/fix-tunnel.sh        遠端修隧道
 remote/opencode-pet.js      遠端 opencode 的 plugin
 remote/install-opencode.sh  遠端 opencode 的裝機腳本
+remote/claude-watch.py      遠端盯著 Claude SSH 工作階段的狀態檔
+remote/install-claude-ssh.sh  上面那支的裝機腳本
 start-pet.cmd               啟動桌寵 + 隧道看守；**每台機器的設定都在這支裡**
 autostart.vbs               開機自動啟動用（跑 start-pet.cmd 且不閃黑窗）
 check.ps1                   一鍵健檢
@@ -62,6 +64,7 @@ RUNBOOK.md                  要打什麼指令看這份
 - 鏡頭給誰：某個來源剛進入「要你看一下」的狀態（`waiting`/`celebrate`/`error`/`aborted`/`stone`）時，先給它 12 秒；否則顯示最近有動作的那個。所以「某端叫你」不會被另一端的忙碌狀態蓋掉，12 秒後又會回到正在幹活的那個。
 - 提示音至少間隔 1.2 秒，三端同時收工不會疊三聲。
 - 右鍵菜單多了「只看來源」，可以只盯 Claude 或只盯 Cursor。
+- 「退出桌宠」會留下 `~/.claude/desk-pet/off`，排程式的自動啟動看到它就不叫了（手動跑 `start-pet.cmd` 會清掉）。退出時順手把隧道看守一起收掉。
 - 單例鎖佔用 **127.0.0.1:47321**，跟官方桌寵同一個埠：這隻先起來，plugin 自己那隻就起不來；官方那隻已經在跑的話會被自動收掉（只認命令行有 `pet.pyw` 又不是 `pet-multi` 的 python 行程）。
 - Claude 和 Cursor 都沒在跑、又沒有任何來源還在發狀態，兩分鐘後桌寵**退場**（收起視窗，行程留著）。
   任何一端有動靜就立刻回來；只是開了 app 沒下指令的話最多等 30 秒。
@@ -273,6 +276,34 @@ ssh 預設 `ExitOnForwardFailure no`，所以它只警告一聲就照常連上�
 
 備案（不用改 ssh 設定、遠端零依賴）：遠端只 append 一行 JSON 到 `~/.cursor/desk-pet/bus.ndjson`，
 Windows 這邊開 `ssh host "tail -f ..."` 子行程讀回來。
+
+**代理環境變數會把 127.0.0.1 也劫走。** 公司機器的 `.bashrc` 常設 `http_proxy`，
+而 `curl` 和 python 的 `urllib` 都會照著走——隧道明明是通的，手打的指令卻回「連不上」，
+但 Cursor 的 hook 又照樣進得來（hook 不是互動 shell，不讀 `.bashrc`）。
+這個差異很容易把人帶去查隧道。對「隧道這端的 127.0.0.1」來說代理永遠不可能是對的，
+所以遠端腳本的每個 `curl` 都帶 `--noproxy '*'`，兩支 python 改用 `ProxyHandler({})` 的 opener。
+
+## Claude 的 SSH 工作階段（已完成）
+
+這一格是最後補上的，而且成因最不直覺：**官方 plugin 在 SSH 工作階段裡，把狀態寫到了遠端的硬碟**。
+
+```ts
+const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '')
+runDir = `${home}/.claude/desk-pet`
+await $.fs.write(petFile, ...)
+```
+
+`$.env` 和 `$.fs` 都是**工作階段範圍**的：SSH 模式下 `USERPROFILE` 不存在，落到 `HOME` 拿到
+`/home/<帳號>`，`$.fs.write` 寫的也是遠端的檔案系統。所以狀態檔好端端地躺在遠端，本機桌寵完全看不到——
+從本機看起來就是「Claude 在動，桌寵沒反應」，而且日誌一片正常，因為每一層都沒壞。
+
+做法是在遠端放一支 `claude-watch.py` 盯著那個目錄，有變動就 POST 回收集器（跟 Cursor、opencode 同一條隧道）。
+它的常駐方式值得一提：**不裝 systemd、不碰登入 shell**，而是當成那把金鑰的第二個動詞，
+由 Windows 這邊的看守拉一條連線養著。連線斷了看守會重連；watcher 這端則靠 **stdin EOF** 判斷
+「ssh 沒了該收攤」——這一條是刻意設計的，否則遠端會慢慢堆出一地孤兒行程（這個坑我們在隧道上踩過一次了）。
+
+一把金鑰兩個動詞靠 `dispatch.sh`：`command=` 強制指令指到它，它只認 `fix` 和 `watch`，
+其他一律當 `fix`。所以那把金鑰能做的事還是只有「轉送那個埠」「修隧道」「送狀態」三件，開不了 shell。
 
 ## opencode 接法（已完成）
 
