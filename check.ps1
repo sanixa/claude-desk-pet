@@ -57,8 +57,6 @@ foreach ($h in $hosts) {
     } else {
         Line "隧道 $tag" $false '没有 ssh -N —— 看 tunnel.log 这台的那几行'
     }
-    $w = $sshs | Where-Object { $_.CommandLine -like "*$h-watch*" } | Select-Object -First 1
-    if ($w) { Line "远端 watcher $tag" $true "pid=$($w.ProcessId)  Claude 的 SSH 工作阶段有人盯着" }
     # 埠号两边要一致：换埠只改一边是最容易犯的错
     $fwd = (& ssh -G $h 2>$null | Select-String '^remoteforward') -replace '.*?:(\d+)\s.*', '$1'
     if ($fwd) {

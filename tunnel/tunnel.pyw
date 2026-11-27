@@ -15,7 +15,6 @@ import re
 import socket
 import subprocess
 import sys
-import threading
 import time
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else (os.environ.get('DESK_PET_TUNNEL_HOST') or 'desk-pet-remote')
@@ -33,9 +32,6 @@ AUTH_TRIES = 3             # 金钥没授权的话，试这么多次就收手（
 FIX_HOST = HOST + '-fix'   # 同一把金钥、不带转送的那条，专门用来请远端清残骸
 FIX_AFTER = 8              # 连抢这么多次都失败（约 1 分钟）就请远端自己清
 FIX_GAP = 300              # 两次清之间至少隔这么久
-WATCH_HOST = HOST + '-watch'   # 养着远端的 claude-watch.py
-WATCH_WAIT = int(os.environ.get('DESK_PET_WATCH_WAIT') or 15)   # watcher 掉了隔这么久再拉起来
-WATCH_TRIES = 3            # 连登入都失败这么多次就收手（远端大概还没装）
 NO_WINDOW = 0x08000000     # CREATE_NO_WINDOW：别闪黑窗
 SSH = os.environ.get('DESK_PET_SSH') or 'ssh'   # 想指定别的 ssh 执行档就设这个
 UNAUTH = os.path.join(RUN_DIR, 'tunnel-unauth-%s' % TAG)   # 这台还没授权的记号
@@ -120,59 +116,6 @@ def clean_remote():
         log('  远端没吭声 —— authorized_keys 那行大概还没加 command="…/fix-tunnel.sh"，看 RUNBOOK 3.4。')
 
 
-def keep_watcher():
-    """养着远端的 claude-watch.py。
-
-    Claude Code 连 SSH 的时候，官方 plugin 把状态写到「远端」的家目录（$.fs 是工作阶段范围的），
-    本机桌宠看不到。那支站在远端盯着那个目录、POST 回收集器；这里只负责断了再拉起来，
-    顺便把它说的话收进日志。走的是同一把金钥的 watch 动词，所以一样开不了 shell。
-
-    stdin 要留着（PIPE 而不是 DEVNULL）：远端那支靠 stdin EOF 判断「ssh 死了该收摊」，
-    一开始就 EOF 的话它会立刻退出。
-    """
-    fails = 0
-    while True:
-        try:
-            proc = subprocess.Popen([SSH, WATCH_HOST, 'watch'], stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True,
-                                    encoding='utf-8', errors='replace', creationflags=NO_WINDOW)
-        except Exception as err:
-            log('远端 watcher 起不来：%s' % err)
-            return
-        started, hello, denied = time.time(), False, False
-        try:
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                if '盯着' in line:
-                    hello = True              # watcher 的开场白，认这个才算真的接上
-                if 'Permission denied' in line:
-                    denied = True         # 这台还没授权，再试两次也一样
-                if '还在（' not in line:       # 心跳不用每分钟记一行
-                    log('远端 watcher: %s' % line[:160])
-        except Exception as err:
-            log('远端 watcher 读不下去：%s' % err)
-        proc.wait()
-        if denied:
-            log('远端 watcher 不拉了：这台的金钥还没授权（看上面隧道那几行）。')
-            return
-        alive = time.time() - started
-        if not hello:
-            # 没听到开场白：多半是那把金钥的强制指令还指着 fix-tunnel.sh（没跑过远端装机脚本）
-            fails += 1
-            log('远端 watcher 没起来（%d/%d，撑了 %.0f 秒）' % (fails, WATCH_TRIES, alive))
-            if fails >= WATCH_TRIES:
-                log("远端还没装 claude-watch：在远端跑 curl --noproxy '*' -fsS http://127.0.0.1:%s/install-claude-ssh | sh，"
-                    % (os.environ.get('DESK_PET_PORT') or '47355'))
-                log('装完再重跑 start-pet.cmd。先不拉了。')
-                return
-        else:
-            fails = 0
-            log('远端 watcher 断了（撑了 %.0f 秒），%d 秒后重拉' % (alive, WATCH_WAIT))
-        time.sleep(WATCH_WAIT)
-
-
 def config_stamp():
     """ssh_config 的改动时间。"""
     try:
@@ -220,7 +163,9 @@ def main():
     log('看守启动，守 %s' % HOST)
     kill_stray_ssh()
     check_port()
-    threading.Thread(target=keep_watcher, daemon=True).start()
+    # 这里原本会拉一条 HOST-watch 的连线，养着远端的 claude-watch.py。2026-11-27 量掉了：
+    # 官方那只 mod 在 SSH 工作阶段根本不跑（本机会话写得出状态档，SSH 会话两边都没有），
+    # 远端没有人写状态，watcher 装了也永远读不到东西。细节看 README「Claude 的 SSH 工作阶段」。
     auth_fails = busy = 0
     last_fix = 0
     while True:

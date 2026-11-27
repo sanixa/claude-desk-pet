@@ -16,8 +16,6 @@ remote/install.sh           遠端 Cursor 的裝機腳本（由收集器自己�
 remote/fix-tunnel.sh        遠端修隧道
 remote/opencode-pet.js      遠端 opencode 的 plugin
 remote/install-opencode.sh  遠端 opencode 的裝機腳本
-remote/claude-watch.py      遠端盯著 Claude SSH 工作階段的狀態檔
-remote/install-claude-ssh.sh  上面那支的裝機腳本
 start-pet.cmd               啟動桌寵 + 隧道看守；**每台機器的設定都在這支裡**
 autostart.vbs               開機自動啟動用（跑 start-pet.cmd 且不閃黑窗）
 check.ps1                   一鍵健檢
@@ -172,19 +170,6 @@ Host desk-pet-remote-fix
     RequestTTY no
     ServerAliveInterval 20
     ServerAliveCountMax 3
-
-# 養著遠端 claude-watch.py 的那條（RUNBOOK 3.5）。內容跟 -fix 一樣，只有名字不同：
-# 看守是用別名去連的（HOST + '-watch'），少了這塊，ssh 會把名字當主機名去解析然後失敗。
-Host desk-pet-remote-watch
-    HostName <REMOTE-IP>
-    User <USER>
-    IdentityFile ~/.ssh/desk-pet-tunnel
-    IdentitiesOnly yes
-    BatchMode yes
-    ClearAllForwardings yes
-    RequestTTY no
-    ServerAliveInterval 20
-    ServerAliveCountMax 3
 ```
 
 **Cursor（或其他工具）連同一台的那塊設定，不要加 `RemoteForward`。** 它們對同一台會開好幾條
@@ -316,9 +301,11 @@ Windows 這邊開 `ssh host "tail -f ..."` 子行程讀回來。
 這個差異很容易把人帶去查隧道。對「隧道這端的 127.0.0.1」來說代理永遠不可能是對的，
 所以遠端腳本的每個 `curl` 都帶 `--noproxy '*'`，兩支 python 改用 `ProxyHandler({})` 的 opener。
 
-## Claude 的 SSH 工作階段（已完成）
+## Claude 的 SSH 工作階段（走不通，已下架）
 
-這一格是最後補上的，而且成因最不直覺：**官方 plugin 在 SSH 工作階段裡，把狀態寫到了遠端的硬碟**。
+這一格試過、錯了，而且錯在哪裡值得留著。
+
+mod 的程式碼確實是這樣寫的：
 
 ```ts
 const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '')
@@ -326,17 +313,26 @@ runDir = `${home}/.claude/desk-pet`
 await $.fs.write(petFile, ...)
 ```
 
-`$.env` 和 `$.fs` 都是**工作階段範圍**的：SSH 模式下 `USERPROFILE` 不存在，落到 `HOME` 拿到
-`/home/<帳號>`，`$.fs.write` 寫的也是遠端的檔案系統。所以狀態檔好端端地躺在遠端，本機桌寵完全看不到——
-從本機看起來就是「Claude 在動，桌寵沒反應」，而且日誌一片正常，因為每一層都沒壞。
+`$.env` 和 `$.fs` 都是**工作階段範圍**的，所以推論是：SSH 模式下 `USERPROFILE` 不存在，落到
+`HOME` 拿到 `/home/<USER>`，狀態檔就躺在遠端、本機看不到。做法也跟著成形：遠端放一支
+`claude-watch.py` 盯那個目錄、POST 回收集器，常駐方式是當成那把金鑰的第二個動詞
+（`dispatch.sh` 只認 `fix` 和 `watch`），由 Windows 這邊的看守拉一條連線養著，
+watcher 自己靠 **stdin EOF** 判斷「ssh 沒了該收攤」，免得遠端堆出孤兒行程。
 
-做法是在遠端放一支 `claude-watch.py` 盯著那個目錄，有變動就 POST 回收集器（跟 Cursor、opencode 同一條隧道）。
-它的常駐方式值得一提：**不裝 systemd、不碰登入 shell**，而是當成那把金鑰的第二個動詞，
-由 Windows 這邊的看守拉一條連線養著。連線斷了看守會重連；watcher 這端則靠 **stdin EOF** 判斷
-「ssh 沒了該收攤」——這一條是刻意設計的，否則遠端會慢慢堆出一地孤兒行程（這個坑我們在隧道上踩過一次了）。
+設計都成立，前提是錯的。2026-11-27 量出來：**那隻 mod 在 SSH 工作階段根本不跑**，
+所以那段路徑邏輯一次也沒執行過，狀態檔哪邊都不存在。對照組是同一分鐘、同一台機器、同一個使用者：
 
-一把金鑰兩個動詞靠 `dispatch.sh`：`command=` 強制指令指到它，它只認 `fix` 和 `watch`，
-其他一律當 `fix`。所以那把金鑰能做的事還是只有「轉送那個埠」「修隧道」「送狀態」三件，開不了 shell。
+| 工作階段 | mod 的 store | `sessions` 目錄 |
+|---|---|---|
+| 本機 | 多了那個工作階段的 `session:` 和它資料夾的 `project:` | 多了狀態檔 |
+| SSH（cwd 在遠端） | 兩個鍵都沒有 | Windows 沒有，遠端也沒有 |
+
+教訓：**讀程式碼只能告訴你「如果跑到會怎樣」，跑不跑要量。** 當初那支裝機腳本第一步就先驗
+「遠端到底有沒有狀態檔」、沒有就拒裝——那個決定後來省掉一場白工，也正是它把真相挖出來的。
+
+還救得回來的方向（還沒做）：SSH 工作階段的逐筆紀錄寫在 **Windows** 的
+`~/.claude/projects/ssh-*/*.jsonl`，從本機讀尾巴推狀態，不需要遠端、也不需要 mod 配合。
+代價是推論而非事件，而且檔尾有幾列沒有 timestamp 的 metadata。
 
 ## opencode 接法（已完成）
 

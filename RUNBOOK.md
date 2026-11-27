@@ -50,7 +50,6 @@ powershell -ExecutionPolicy Bypass -File <安裝目錄>\check.ps1
 | Windows | 本機 Cursor 的 hook | `~\.cursor\hooks.json` → `adapters\cursor-pet.py` |
 | 遠端 | Cursor 的 hook | `~/.cursor/hooks.json` → `~/.cursor/desk-pet/report.sh` |
 | 遠端 | opencode 的 plugin | `~/.config/opencode/plugins/desk-pet.js` |
-| 遠端 | Claude SSH 工作階段的監看 | `~/.claude/desk-pet/bin/claude-watch.py`（由看守養著） |
 | Windows | 開機自動啟動 | `Startup\Desk Pet.lnk` → `autostart.vbs` |
 
 佔用的埠：**47355** 收集器（每台遠端的 127.0.0.1:47355 都轉到這一個）、47321 桌寵單例鎖、
@@ -214,32 +213,29 @@ sed -i 's|^restrict,port-forwarding |restrict,port-forwarding,command="/home/<US
 
 ---
 
-### 3.5 Claude 的 SSH 工作階段
+### 3.5 Claude 的 SSH 工作階段（走不通，不要裝）
 
-Claude Code 連 SSH 的時候，官方 plugin 把狀態寫到**遠端**的家目錄（`$.env`／`$.fs` 都是工作階段範圍的：
-`USERPROFILE` 在 Linux 上不存在，落到 `HOME` 就變成遠端的路徑）。本機桌寵看不到，所以要有人在遠端盯著。
+**這條路驗掉了，相關的腳本和看守裡的 watcher 都拿掉了。** 這一節留著是為了別再試第二次。
 
-在**遠端終端**：
+原本的推論：官方那隻桌寵 mod 的程式碼寫著 `USERPROFILE ?? HOME`，SSH 模式下 `USERPROFILE`
+不存在，所以狀態應該落到遠端的 `/home/<USER>/.claude/desk-pet/`——那就在遠端放一支 watcher
+盯著、POST 回收集器。
 
-```sh
-curl --noproxy '*' -fsS http://127.0.0.1:47355/install-claude-ssh | sh
-```
+2026-11-27 的實測把前提推翻了：**那隻 mod 在 SSH 工作階段根本不跑**，狀態兩邊都不存在。
 
-它會先**驗一件事**：`~/.claude/desk-pet/sessions/` 裡到底有沒有 Claude 的狀態檔。
-沒有的話就不是「寫到遠端」而是「plugin 在 SSH 工作階段根本沒載入」，腳本會直接說並退出——別白裝。
+| 工作階段 | cwd | mod 自己的 store | `~\.claude\desk-pet\sessions` |
+|---|---|---|---|
+| 本機（對照組） | Windows 資料夾 | 多了 `session:`／`project:` | 多了狀態檔 |
+| SSH 到遠端 | 遠端路徑（`/mnt/…`） | 兩個鍵都沒有 | Windows 沒有，遠端也沒有 |
 
-裝好之後：
+兩個工作階段在同一分鐘都在動，同一台機器、同一個使用者，mod 還是**使用者層級**裝的
+（`~\.claude.json` 的 `pluginUsage`）。所以不是「寫到遠端、沒人送回來」，是**沒有人寫**；
+遠端 watcher 讀的是遠端的狀態檔，裝了也永遠讀不到東西。裝機腳本的第一步就是在驗這件事。
 
-- `~/.claude/desk-pet/bin/claude-watch.py`：每 0.5 秒看一次那個目錄，有變動就 POST 回收集器。
-  啟動時只認五分鐘內動過的（不把上禮拜的狀態叫醒），檔案消失就送 `gone`。
-  **stdin 一斷（ssh 死了）就自己退出**，不會在遠端留下孤兒。
-- `~/.claude/desk-pet/bin/dispatch.sh`：那把金鑰的強制指令改指到這裡，**一把金鑰兩個動詞**——
-  `fix` 跑 `fix-tunnel.sh`、`watch` 跑 watcher，其他一律當 `fix`。還是開不了 shell、跑不了別的指令。
-- Windows 這邊：重跑 `start-pet.cmd`，看守會多拉一條 `desk-pet-remote-watch` 的連線把 watcher 養著，
-  斷了自動重連。`tunnel.log` 裡開頭是「遠端 watcher」的行就是它說的話。
-
-沒裝的時候看守會講：連三次收到的都不是 watcher 的開場白，就印出該跑的那行裝機指令然後停手
-（因為那把金鑰的強制指令還指著 `fix-tunnel.sh`，`watch` 會被當成 `fix`）。
+還沒做、但救得回來的方向：SSH 工作階段的逐筆紀錄寫在 **Windows** 的
+`~\.claude\projects\ssh-<id>\<uuid>.jsonl`，從本機讀尾巴推狀態就好，不需要遠端任何東西、
+也不需要那隻 mod 配合。代價是那是推論不是事件（會有延遲），而且檔尾壓著幾列沒有 timestamp
+的 metadata，不能天真地讀最後一行。
 
 ---
 
@@ -247,7 +243,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:47355/install-claude-ssh | sh
 
 三件事，缺一件就只會看到「看守活著、隧道沒起來」：
 
-1. **`~\.ssh\config`**：抄 `desk-pet-remote` 那三塊（本體／`-fix`／`-watch`），改名字和 `HostName`。
+1. **`~\.ssh\config`**：抄 `desk-pet-remote` 那兩塊（本體和 `-fix`），改名字和 `HostName`。
    `RemoteForward` 兩個數字都保持 47355——那是**對方那台的** 127.0.0.1，各自獨立，不會互相搶。
 2. **`start-pet.cmd`**：抄那一對兩行，`DESK_PET_LOCK` 換一個沒人用的（現在用了 47320、47319）。
    **這步最容易漏**：兩台共用一個鎖的話，第二支看守會起不來，而且畫面上什麼都看不出來——
@@ -257,7 +253,7 @@ curl --noproxy '*' -fsS http://127.0.0.1:47355/install-claude-ssh | sh
    排程再怎麼叫，它也要等三十分鐘才再試一次——不然每十分鐘刷八行，會把別台的歷史輪替掉。
    **所以授權完就自己跑一次 `start-pet.cmd`**：手動啟動會把記號清掉，立刻重試。
 
-裝機腳本（3.1／3.2／3.5）也是**一台一次**，在哪台跑就裝在哪台。
+裝機腳本（3.1／3.2）也是**一台一次**，在哪台跑就裝在哪台。
 `tunnel.log` 每行開頭的 `[remote]`、`[remote2]` 就是哪一台在說話。
 
 ---
@@ -313,7 +309,7 @@ Get-Content $env:USERPROFILE\.claude\desk-pet\collector.log -Tail 10 -Encoding U
 | 遠端 curl 逾時 | 殘留的 sshd 占著埠 | 等看守自己清，或遠端跑 `fix-tunnel.sh` |
 | 遠端 curl 被拒 | 隧道通、桌寵沒開 | Windows 跑 `start-pet.cmd` |
 | 遠端 curl 說連不上／連不到代理 | 那個 shell 的 rc 設了 `http_proxy`，curl 把 127.0.0.1 也丟給代理 | 指令加 `--noproxy '*'`（第 3 節的指令都帶了） |
-| Claude 的 SSH 工作階段沒上鏡 | 狀態寫在遠端，沒人送回來 | 遠端裝 3.5 的 watcher |
+| Claude 的 SSH 工作階段沒上鏡 | mod 在 SSH 工作階段不報狀態（已驗，見 3.5） | 目前沒解，別裝 watcher |
 | 狀態停在舊的不動 | 那端掛了沒送 `gone` | 30 分鐘後自動退場，或直接砍 `sessions\*.json` |
 | 看守活著、隧道一直沒起來 | 那台還沒授權金鑰（`tunnel.log` 會有 `Permission denied`） | 照 3.4 在那台貼一次，再跑 `start-pet.cmd` |
 | 少一支看守，而且沒聲沒息 | 兩台用到同一個鎖端口 | `tunnel.log` 找「鎖 … 有人占著」；改 `start-pet.cmd` 的 `DESK_PET_LOCK` |

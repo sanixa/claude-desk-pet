@@ -330,8 +330,8 @@ SERVE_FILES = {
     '/fix': (os.path.join(STANDALONE, 'remote', 'fix-tunnel.sh'), 'text/x-shellscript'),
     '/opencode-pet.js': (os.path.join(STANDALONE, 'remote', 'opencode-pet.js'), 'text/javascript'),
     '/install-opencode': (os.path.join(STANDALONE, 'remote', 'install-opencode.sh'), 'text/x-shellscript'),
-    '/claude-watch.py': (os.path.join(STANDALONE, 'remote', 'claude-watch.py'), 'text/x-python'),
-    '/install-claude-ssh': (os.path.join(STANDALONE, 'remote', 'install-claude-ssh.sh'), 'text/x-shellscript'),
+    # /claude-watch.py 和 /install-claude-ssh 下架了（2026-11-27 量到那只 mod 在 SSH 工作阶段
+    # 不写状态，装了也没东西可读）。不认识的路径一律 404，所以远端连装都装不起来。
     '/cursor-pet.py': (os.path.join(STANDALONE, 'adapters', 'cursor-pet.py'), 'text/x-python'),
 }
 
