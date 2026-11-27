@@ -1,4 +1,4 @@
-# 桌宠的反向隧道看守：让「远端 127.0.0.1:47322 → 这台的收集器」这条隧道有自己的 ssh 连线。
+# 桌宠的反向隧道看守：让「远端 127.0.0.1:47355 → 这台的收集器」这条隧道有自己的 ssh 连线。
 #
 # 为什么要有这支：隧道原本是搭 Cursor 的 Remote-SSH 连线便车（ssh_config 里的 RemoteForward）。
 # 但 Cursor 对同一台会开好几条连线、reload 一次就全换，每条都去抢同一个端口：
@@ -9,6 +9,7 @@
 # 端口被别人占着就马上退出，这支隔几秒再试，所以端口一空出来就会被我们抢回来。
 #
 # 用法：pythonw tunnel.pyw [ssh 的 host 别名] [运行目录]
+#       一台远端一支，锁端口用 DESK_PET_LOCK 区分（见 start-pet.cmd）。
 import os
 import re
 import socket
@@ -21,8 +22,11 @@ HOST = sys.argv[1] if len(sys.argv) > 1 else (os.environ.get('DESK_PET_TUNNEL_HO
 RUN_DIR = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.expanduser('~'), '.claude', 'desk-pet')
 LOG = os.path.join(RUN_DIR, 'tunnel.log')
 KEY = os.path.join(os.path.expanduser('~'), '.ssh', 'desk-pet-tunnel')
+TAG = HOST.replace('desk-pet-', '') or HOST   # 日志前缀：多台的时候要分得出是谁在说话
 
-LOCK_PORT = 47320          # 只准一支看守
+# 一台远端一支看守，所以锁端口要一台一个（start-pet.cmd 里设）。
+# 两台不小心设成同一个的话，第二支起不来 —— take_lock() 会把这件事写进日志，不会悄悄消失。
+LOCK_PORT = int(os.environ.get('DESK_PET_LOCK') or 47320)
 BUSY_WAIT = 8              # 端口被占：很快再试，一空出来就抢
 NORMAL_WAIT = 15           # 连线掉了：隔一下再连
 AUTH_TRIES = 3             # 金钥没授权的话，试这么多次就收手（不然永远在那边敲门）
@@ -34,15 +38,17 @@ WATCH_WAIT = int(os.environ.get('DESK_PET_WATCH_WAIT') or 15)   # watcher 掉了
 WATCH_TRIES = 3            # 连登入都失败这么多次就收手（远端大概还没装）
 NO_WINDOW = 0x08000000     # CREATE_NO_WINDOW：别闪黑窗
 SSH = os.environ.get('DESK_PET_SSH') or 'ssh'   # 想指定别的 ssh 执行档就设这个
+UNAUTH = os.path.join(RUN_DIR, 'tunnel-unauth-%s' % TAG)   # 这台还没授权的记号
+UNAUTH_QUIET = 1800       # 记号还新就静静退出：排程每 10 分钟会叫一次，不然日志会被刷掉
 
 
 def log(line):
     try:
         os.makedirs(RUN_DIR, exist_ok=True)
         if os.path.exists(LOG) and os.path.getsize(LOG) > 200000:
-            os.remove(LOG)
+            os.replace(LOG, LOG + '.old')   # 不要 remove：多支看守写同一个档，删掉会把别人的行一起带走
         with open(LOG, 'a', encoding='utf-8') as f:
-            f.write('%s  %s\n' % (time.strftime('%m-%d %H:%M:%S'), line))
+            f.write('%s  [%s] %s\n' % (time.strftime('%m-%d %H:%M:%S'), TAG, line))
     except Exception:
         pass
 
@@ -133,7 +139,7 @@ def keep_watcher():
         except Exception as err:
             log('远端 watcher 起不来：%s' % err)
             return
-        started, hello = time.time(), False
+        started, hello, denied = time.time(), False, False
         try:
             for line in proc.stdout:
                 line = line.strip()
@@ -141,18 +147,23 @@ def keep_watcher():
                     continue
                 if '盯着' in line:
                     hello = True              # watcher 的开场白，认这个才算真的接上
+                if 'Permission denied' in line:
+                    denied = True         # 这台还没授权，再试两次也一样
                 if '还在（' not in line:       # 心跳不用每分钟记一行
                     log('远端 watcher: %s' % line[:160])
         except Exception as err:
             log('远端 watcher 读不下去：%s' % err)
         proc.wait()
+        if denied:
+            log('远端 watcher 不拉了：这台的金钥还没授权（看上面隧道那几行）。')
+            return
         alive = time.time() - started
         if not hello:
             # 没听到开场白：多半是那把金钥的强制指令还指着 fix-tunnel.sh（没跑过远端装机脚本）
             fails += 1
             log('远端 watcher 没起来（%d/%d，撑了 %.0f 秒）' % (fails, WATCH_TRIES, alive))
             if fails >= WATCH_TRIES:
-                log('远端还没装 claude-watch：在远端跑 curl -fsS http://127.0.0.1:%s/install-claude-ssh | sh，'
+                log("远端还没装 claude-watch：在远端跑 curl --noproxy '*' -fsS http://127.0.0.1:%s/install-claude-ssh | sh，"
                     % (os.environ.get('DESK_PET_PORT') or '47355'))
                 log('装完再重跑 start-pet.cmd。先不拉了。')
                 return
@@ -193,13 +204,19 @@ def take_lock():
         return s
     except OSError:
         s.close()
-        sys.exit(0)        # 已经有一支在看了
+        log('锁 %d 有人占着，这支不起来（这台已经有一支在看了，或是两台用到同一个锁端口）' % LOCK_PORT)
+        sys.exit(0)
 
 
 def main():
     if not os.path.exists(KEY):
         log('没有 %s —— 金钥还没做，先看 README 的「专属隧道」那节。' % KEY)
         return
+    try:
+        if time.time() - os.path.getmtime(UNAUTH) < UNAUTH_QUIET:
+            return        # 刚刚才确认过这台没授权，上一轮写过日志了，这次不吵
+    except OSError:
+        pass
     log('看守启动，守 %s' % HOST)
     kill_stray_ssh()
     check_port()
@@ -221,6 +238,10 @@ def main():
         except subprocess.TimeoutExpired:
             log('隧道接上了，守着 %s' % HOST)
             auth_fails = busy = 0
+            try:
+                os.remove(UNAUTH)   # 通了，记号就不该留着
+            except OSError:
+                pass
             raw = watch(proc)
         err = ' '.join((raw or '').split())[:300]
         alive = time.time() - started
@@ -229,7 +250,13 @@ def main():
             auth_fails += 1
             log('登不进去（%d/%d）：%s' % (auth_fails, AUTH_TRIES, err))
             if auth_fails >= AUTH_TRIES:
-                log('金钥看起来还没授权到远端，先停了。授权好以后重跑 start-pet.cmd。')
+                log('金钥看起来还没授权到这台，先停了（%d 分钟内不再试）。'
+                    '授权好以后重跑 start-pet.cmd，或等排程自己叫。' % (UNAUTH_QUIET // 60))
+                try:
+                    with open(UNAUTH, 'w', encoding='utf-8') as f:
+                        f.write(time.strftime('%Y-%m-%d %H:%M:%S'))
+                except OSError:
+                    pass
                 return
             wait = 20
         elif 'forwarding failed' in err:

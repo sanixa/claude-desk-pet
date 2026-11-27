@@ -22,17 +22,21 @@ powershell -ExecutionPolicy Bypass -File <安裝目錄>\check.ps1
 ```
 [OK]  收集器               127.0.0.1:47355  {"ok": true, "pet": "alive"}
 [OK]  桌宠                pid=40400  起于 15:42:10
-[OK]  隧道看守              pid=42800  起于 15:10:21
-[OK]  隧道                pid=47368  撑了 1741 秒
-[OK]  埠号一致              ssh_config 转送 47355  /  收集器 47355
+[OK]  看守 remote          pid=42800  起于 15:10:21
+[OK]  隧道 remote          pid=47368  撑了 1741 秒（ExitOnForwardFailure=yes，活着就代表远端绑成功）
+[OK]  埠号 remote          ssh_config 转送 47355  /  收集器 47355
+[OK]  看守 remote2         pid=42036  起于 15:10:21
+[OK]  隧道 remote2         pid=47401  撑了 1735 秒（同上）
+[OK]  埠号 remote2         ssh_config 转送 47355  /  收集器 47355
 
 --- 现在上镜的来源 ---
   cursor    远端    <HOSTNAME>    轮到你啦！   214 秒前
   claude    本机    seven          在跑命令…     3 秒前
 ```
 
-「隧道」那行的判斷依據：ssh 帶 `ExitOnForwardFailure=yes`，**綁不到埠就會立刻死**，
-所以它活著就代表遠端那頭的 listener 真的建起來了。
+「隧道」那幾行的判斷依據：ssh 帶 `ExitOnForwardFailure=yes`，**綁不到埠就會立刻死**，
+所以它活著就代表那台遠端的 listener 真的建起來了。看守、隧道、埠號都是**一台一組**，
+後面的標籤就是 `tunnel.log` 裡的 `[remote]`、`[remote2]`。
 
 ---
 
@@ -41,15 +45,16 @@ powershell -ExecutionPolicy Bypass -File <安裝目錄>\check.ps1
 | 在哪 | 跑什麼 | 位置 |
 |---|---|---|
 | Windows | 桌寵 + 收集器（**47355**） | `pet\pet-multi.pyw` |
-| Windows | 隧道看守 | `tunnel\tunnel.pyw` |
-| Windows | 隧道本體 | `ssh -N desk-pet-remote` |
+| Windows | 隧道看守 | `tunnel\tunnel.pyw`，**一台遠端一支**（第一台鎖 47320、第二台鎖 47319） |
+| Windows | 隧道本體 | `ssh -N desk-pet-remote`、`ssh -N desk-pet-remote2` |
 | Windows | 本機 Cursor 的 hook | `~\.cursor\hooks.json` → `adapters\cursor-pet.py` |
 | 遠端 | Cursor 的 hook | `~/.cursor/hooks.json` → `~/.cursor/desk-pet/report.sh` |
 | 遠端 | opencode 的 plugin | `~/.config/opencode/plugins/desk-pet.js` |
 | 遠端 | Claude SSH 工作階段的監看 | `~/.claude/desk-pet/bin/claude-watch.py`（由看守養著） |
 | Windows | 開機自動啟動 | `Startup\Desk Pet.lnk` → `autostart.vbs` |
 
-佔用的埠：**47355** 收集器（兩頭同號）、47321 桌寵單例鎖、47320 看守單例鎖。
+佔用的埠：**47355** 收集器（每台遠端的 127.0.0.1:47355 都轉到這一個）、47321 桌寵單例鎖、
+47320／47319 兩支看守的鎖（**一支一個，不能共用**）。
 
 日誌都在 `~\.claude\desk-pet\`：
 
@@ -184,8 +189,8 @@ Windows 產金鑰（已經有 `~\.ssh\desk-pet-tunnel` 就跳過）：
 ssh-keygen -t ed25519 -N '""' -f $env:USERPROFILE\.ssh\desk-pet-tunnel -C "desk-pet-tunnel (forward only)"
 ```
 
-授權（在**遠端終端**貼一次，不用密碼，你在那邊本來就是登入狀態）。完整那行存在
-Windows 的 `~\.ssh\desk-pet-tunnel.authorized`：
+授權是**一台一次**（每台遠端的 `authorized_keys` 各自獨立）。在**遠端終端**貼，不用密碼，
+你在那邊本來就是登入狀態。完整那行存在 Windows 的 `~\.ssh\desk-pet-tunnel.authorized`：
 
 ```sh
 mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '<貼 desk-pet-tunnel.authorized 的內容>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
@@ -206,6 +211,8 @@ sed -i 's|^restrict,port-forwarding |restrict,port-forwarding,command="/home/<US
 
 開不了 shell、沒有 pty、跑不了別的指令，所以沒有 passphrase 也還算安全。
 `-N` 的隧道不開 session channel，完全不受 `command=` 影響，兩件事互不干擾。
+
+---
 
 ### 3.5 Claude 的 SSH 工作階段
 
@@ -233,6 +240,25 @@ curl --noproxy '*' -fsS http://127.0.0.1:47355/install-claude-ssh | sh
 
 沒裝的時候看守會講：連三次收到的都不是 watcher 的開場白，就印出該跑的那行裝機指令然後停手
 （因為那把金鑰的強制指令還指著 `fix-tunnel.sh`，`watch` 會被當成 `fix`）。
+
+---
+
+### 3.6 再加一台遠端
+
+三件事，缺一件就只會看到「看守活著、隧道沒起來」：
+
+1. **`~\.ssh\config`**：抄 `desk-pet-remote` 那三塊（本體／`-fix`／`-watch`），改名字和 `HostName`。
+   `RemoteForward` 兩個數字都保持 47355——那是**對方那台的** 127.0.0.1，各自獨立，不會互相搶。
+2. **`start-pet.cmd`**：抄那一對兩行，`DESK_PET_LOCK` 換一個沒人用的（現在用了 47320、47319）。
+   **這步最容易漏**：兩台共用一個鎖的話，第二支看守會起不來，而且畫面上什麼都看不出來——
+   只有 `tunnel.log` 會說「鎖 47320 有人占著」。
+3. **那台的 `authorized_keys`**：照 3.4 貼一次。沒授權的話看守會試三次就收手
+   （`tunnel.log` 裡 `Permission denied`），並留下 `tunnel-unauth-<標籤>` 記號：
+   排程再怎麼叫，它也要等三十分鐘才再試一次——不然每十分鐘刷八行，會把別台的歷史輪替掉。
+   **所以授權完就自己跑一次 `start-pet.cmd`**：手動啟動會把記號清掉，立刻重試。
+
+裝機腳本（3.1／3.2／3.5）也是**一台一次**，在哪台跑就裝在哪台。
+`tunnel.log` 每行開頭的 `[remote]`、`[remote2]` 就是哪一台在說話。
 
 ---
 
@@ -289,6 +315,8 @@ Get-Content $env:USERPROFILE\.claude\desk-pet\collector.log -Tail 10 -Encoding U
 | 遠端 curl 說連不上／連不到代理 | 那個 shell 的 rc 設了 `http_proxy`，curl 把 127.0.0.1 也丟給代理 | 指令加 `--noproxy '*'`（第 3 節的指令都帶了） |
 | Claude 的 SSH 工作階段沒上鏡 | 狀態寫在遠端，沒人送回來 | 遠端裝 3.5 的 watcher |
 | 狀態停在舊的不動 | 那端掛了沒送 `gone` | 30 分鐘後自動退場，或直接砍 `sessions\*.json` |
+| 看守活著、隧道一直沒起來 | 那台還沒授權金鑰（`tunnel.log` 會有 `Permission denied`） | 照 3.4 在那台貼一次，再跑 `start-pet.cmd` |
+| 少一支看守，而且沒聲沒息 | 兩台用到同一個鎖端口 | `tunnel.log` 找「鎖 … 有人占著」；改 `start-pet.cmd` 的 `DESK_PET_LOCK` |
 | 改了設定卻沒效果 | **ssh 只在啟動時讀設定** | 砍掉 `ssh -N` 行程，看守會用新設定重拉 |
 | 開機後隧道一直搶不到 | 上次關機時留下的殘骸還占著埠 | 遠端跑 `fix-tunnel.sh`；看守會在 8 秒內接手 |
 
@@ -319,7 +347,7 @@ Get-Content $env:USERPROFILE\.claude\desk-pet\collector.log -Tail 10 -Encoding U
 兩個地方必須同時改，看守開場會比對，不一致會寫進 `tunnel.log`。
 
 1. `start-pet.cmd` 裡的 `set DESK_PET_PORT=47355`
-2. `~\.ssh\config` 的 `Host desk-pet-remote` 裡的 `RemoteForward 127.0.0.1:47355 127.0.0.1:47355`（兩個數字都要）
+2. `~\.ssh\config` 裡**每一塊** `Host desk-pet-*` 的 `RemoteForward 127.0.0.1:47355 127.0.0.1:47355`（兩個數字都要）
 
 然後：
 
@@ -339,7 +367,7 @@ Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.Comma
 ## 7. 拆掉
 
 Windows：停掉行程（第 2 節）、刪 `~\.cursor\hooks.json`、刪 `~\.ssh\config` 裡
-`Host desk-pet-remote` 那塊、刪 `~\.ssh\desk-pet-tunnel*`。
+`Host desk-pet-*` 每一塊、刪 `~\.ssh\desk-pet-tunnel*`。
 
 遠端：
 

@@ -172,6 +172,19 @@ Host desk-pet-remote-fix
     RequestTTY no
     ServerAliveInterval 20
     ServerAliveCountMax 3
+
+# 養著遠端 claude-watch.py 的那條（RUNBOOK 3.5）。內容跟 -fix 一樣，只有名字不同：
+# 看守是用別名去連的（HOST + '-watch'），少了這塊，ssh 會把名字當主機名去解析然後失敗。
+Host desk-pet-remote-watch
+    HostName <REMOTE-IP>
+    User <USER>
+    IdentityFile ~/.ssh/desk-pet-tunnel
+    IdentitiesOnly yes
+    BatchMode yes
+    ClearAllForwardings yes
+    RequestTTY no
+    ServerAliveInterval 20
+    ServerAliveCountMax 3
 ```
 
 **Cursor（或其他工具）連同一台的那塊設定，不要加 `RemoteForward`。** 它們對同一台會開好幾條
@@ -207,6 +220,26 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo 'restrict,port-forwarding ssh-ed2551
 
 同一行也存在 Windows 的 `~/.ssh/desk-pet-tunnel.authorized`。授權完重跑 `start-pet.cmd` 就接手了
 （已完成：`Host <REMOTE-IP>` 的 `RemoteForward` 也拿掉了，Cursor 不會再來搶）。
+
+### 多台遠端：一台一支看守
+
+在第二台上跑 `curl 127.0.0.1:47355` 連不上，是因為那個回路是它自己的，而隧道只通到第一台。
+要多接一台就得多一條 ssh——**不能共用**，因為「這條連線活著」正是隧道通不通的唯一證據
+（`ExitOnForwardFailure=yes`），一條連線沒辦法同時替兩台作證。
+
+所以看守變成一台一支。本來卡住這件事的是單例鎖：`LOCK_PORT` 寫死 47320，
+第二支會以為「已經有人在看了」然後**安靜退出**——這是最糟的失敗方式，畫面上什麼都看不出來。
+現在鎖端口由 `DESK_PET_LOCK` 指定（`start-pet.cmd` 裡一台一個），而且搶不到鎖會寫進日誌。
+
+兩台共用一個收集器埠是安全的：各自的 `RemoteForward` 綁的是**自己那台**的 127.0.0.1:47355，
+同名但不同機器，轉進來之後都落到 Windows 這一個收集器。狀態檔的 id 是 conversation uuid，
+不會撞；氣泡上的名字取遠端 hostname，所以兩台的工作階段分得出來。
+
+日誌還是同一個 `tunnel.log`，每行前面加了 `[remote]`／`[remote2]`（別名去掉 `desk-pet-` 的那段）。
+輪替也從 `os.remove` 改成 `os.replace(… .old)`：兩支看守寫同一個檔，直接刪會把另一支剛寫的行一起帶走。
+
+金鑰沒授權的那台，看守試三次就收手並留下 `tunnel-unauth-<標籤>` 記號，三十分鐘內不再試——
+排程每十分鐘叫一次，不然光是這台就會把別台的日誌刷掉。手動跑 `start-pet.cmd` 會清掉記號立刻重試。
 
 ### 隧道不通的時候
 
